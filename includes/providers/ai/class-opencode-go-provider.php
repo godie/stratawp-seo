@@ -15,6 +15,15 @@ class SWPS_OpenCode_Go_Provider extends SWPS_AI_Provider {
 	private const MODELS_URL = 'https://opencode.ai/inference/go/v1/models';
 
 	/**
+	 * Get the stored OpenCode Go API key, decrypting encrypted values.
+	 *
+	 * Existing plaintext values are returned unchanged (no data loss).
+	 */
+	public function get_api_key(): string {
+		return SWPS_Encryption::decrypt( (string) get_option( $this->get_api_key_option(), '' ) );
+	}
+
+	/**
 	 * Stable session identifier for OpenCode Go request routing.
 	 *
 	 * @var string|null

@@ -308,10 +308,20 @@ class SWPS_Onboarding {
 			wp_send_json_error( array( 'message' => __( 'API key test failed. Please check the key and try again.', 'stratawp-seo' ) ) );
 		}
 
-		// Key is valid — save through the same option names Settings uses:
-		// swps_ai_provider  and  swps_{slug}_api_key  (plain sanitize_text_field, not encrypted).
+		// Key is valid — save through the same option names Settings uses.
+		// Encrypt opencode_go_api_key (fail-safe: preserve existing on encrypt failure).
+		$value_to_save = $api_key;
+		$option_name   = $provider->get_api_key_option();
+		if ( 'opencode_go_api_key' === $provider_slug || 'swps_opencode_go_api_key' === $option_name ) {
+			$encrypted = SWPS_Encryption::encrypt( $api_key );
+			if ( '' === $encrypted && '' !== $api_key ) {
+				wp_send_json_error( array( 'message' => __( 'Could not encrypt the OpenCode Go API key. The existing saved value was kept.', 'stratawp-seo' ) ) );
+			}
+			$value_to_save = $encrypted;
+		}
+
 		update_option( 'swps_ai_provider', $provider_slug );
-		update_option( $provider->get_api_key_option(), $api_key );
+		update_option( $option_name, $value_to_save );
 
 		$this->mark_step( 'api_key' );
 

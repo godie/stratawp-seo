@@ -1409,15 +1409,28 @@ class SWPS_Settings {
 	 * Get the appropriate sanitize callback for a field type.
 	 */
 	private function get_sanitize_callback( string $type, string $key = '' ): callable {
-		// Encrypt the jon_ai_secret and gsc_client_secret on save.
-		if ( $key === 'jon_ai_secret' || $key === 'gsc_client_secret' ) {
+		// Encrypt secret keys on save. Preserve existing value on encryption failure.
+		$encrypted_keys = array( 'jon_ai_secret', 'gsc_client_secret', 'opencode_go_api_key' );
+		if ( in_array( $key, $encrypted_keys, true ) ) {
 			$option_name = "swps_{$key}";
 			return function ( $value ) use ( $option_name ) {
+				$existing = (string) get_option( $option_name, '' );
 				if ( empty( $value ) ) {
-					// Preserve existing encrypted value when field submitted empty.
-					return get_option( $option_name, '' );
+					// Preserve existing value when field submitted empty.
+					return $existing;
 				}
-				return SWPS_Encryption::encrypt( sanitize_text_field( $value ) );
+				$sanitized = sanitize_text_field( $value );
+				$encrypted = SWPS_Encryption::encrypt( $sanitized );
+				if ( '' === $encrypted && '' !== $sanitized ) {
+					add_settings_error(
+						$option_name,
+						'swps_encrypt_failed',
+						__( 'Could not encrypt the API key/secret. The existing saved value was kept.', 'stratawp-seo' ),
+						'error'
+					);
+					return $existing;
+				}
+				return $encrypted;
 			};
 		}
 
@@ -1450,11 +1463,13 @@ class SWPS_Settings {
 		$value   = get_option( $name, $default );
 		$desc    = $args['description'] ?? '';
 
-		// Don't display encrypted values — show empty field with saved indicator.
-		$has_encrypted_value = false;
-		if ( in_array( $args['key'], array( 'jon_ai_secret', 'gsc_client_secret' ), true ) && ! empty( $value ) && SWPS_Encryption::is_encrypted( $value ) ) {
-			$has_encrypted_value = true;
-			$value               = '';
+		// Never render saved secret values in HTML. For encrypted-at-rest keys,
+		// show a saved indicator (including legacy plaintext until re-saved).
+		$has_saved_secret    = false;
+		$secret_field_keys   = array( 'jon_ai_secret', 'gsc_client_secret', 'opencode_go_api_key' );
+		if ( in_array( $args['key'], $secret_field_keys, true ) && ! empty( $value ) ) {
+			$has_saved_secret = true;
+			$value            = '';
 		}
 
 		switch ( $type ) {
@@ -1559,9 +1574,9 @@ class SWPS_Settings {
 				break;
 		}
 
-		if ( $has_encrypted_value ) {
+		if ( $has_saved_secret ) {
 			echo '<span class="dashicons dashicons-yes" style="color:#00a32a;vertical-align:middle;"></span> ';
-			echo '<span style="color:#00a32a;">' . esc_html__( 'Saved (encrypted). Leave blank to keep current value.', 'stratawp-seo' ) . '</span>';
+			echo '<span style="color:#00a32a;">' . esc_html__( 'Saved. Leave blank to keep current value.', 'stratawp-seo' ) . '</span>';
 		}
 
 		if ( $desc ) {
