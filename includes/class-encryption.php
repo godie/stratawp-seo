@@ -221,4 +221,116 @@ class SWPS_Encryption {
 			error_log( 'SWPS_Encryption: ' . $reason ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- diagnostic for an unrecoverable crypto failure; no secret material logged.
 		}
 	}
+
+	/**
+	 * Secret option names (full option names) that must be encrypted at rest.
+	 * Excludes swps_indexnow_api_key (public key by design).
+	 *
+	 * @return string[]
+	 */
+	public static function secret_option_names(): array {
+		return array(
+			'swps_anthropic_api_key',
+			'swps_openai_api_key',
+			'swps_google_api_key',
+			'swps_xai_api_key',
+			'swps_opencode_go_api_key',
+			'swps_unsplash_api_key',
+			'swps_pexels_api_key',
+			'swps_pixabay_api_key',
+			'swps_jon_ai_secret',
+			'swps_gsc_client_secret',
+		);
+	}
+
+	/**
+	 * Secret field keys (Settings field key / provider slug fragment) encrypted at rest.
+	 *
+	 * @return string[]
+	 */
+	public static function secret_field_keys(): array {
+		return array(
+			'anthropic_api_key',
+			'openai_api_key',
+			'google_api_key',
+			'xai_api_key',
+			'opencode_go_api_key',
+			'unsplash_api_key',
+			'pexels_api_key',
+			'pixabay_api_key',
+			'jon_ai_secret',
+			'gsc_client_secret',
+		);
+	}
+
+	/**
+	 * Whether a full option name is a secret stored encrypted at rest.
+	 */
+	public static function is_secret_option( string $option_name ): bool {
+		return in_array( $option_name, self::secret_option_names(), true );
+	}
+
+	/**
+	 * Get a secret option value, decrypting if needed.
+	 *
+	 * Plaintext legacy values are returned unchanged (migration-safe).
+	 */
+	public static function get_secret_option( string $option_name, string $default = '' ): string {
+		$value = get_option( $option_name, $default );
+		if ( ! is_string( $value ) || '' === $value ) {
+			return is_string( $value ) ? $value : (string) $default;
+		}
+		return self::decrypt( $value );
+	}
+
+	/**
+	 * Encrypt a secret option value for storage.
+	 *
+	 * @param string $option_name Full option name.
+	 * @param mixed  $value       Submitted value.
+	 * @return array{value:string, error:bool} Stored value (preserved existing on failure/empty) and error flag.
+	 */
+	public static function encrypt_option_for_storage( string $option_name, $value ): array {
+		$existing = (string) get_option( $option_name, '' );
+		if ( null === $value || '' === $value ) {
+			return array( 'value' => $existing, 'error' => false );
+		}
+		$sanitized = sanitize_text_field( (string) $value );
+		if ( '' === $sanitized ) {
+			return array( 'value' => $existing, 'error' => false );
+		}
+		$encrypted = self::encrypt( $sanitized );
+		if ( '' === $encrypted ) {
+			return array( 'value' => $existing, 'error' => true );
+		}
+		return array( 'value' => $encrypted, 'error' => false );
+	}
+
+	/**
+	 * Migrate plaintext secret options to encrypted-at-rest values.
+	 *
+	 * Idempotent and failure-safe: encrypts only non-empty non-encrypted values;
+	 * leaves values untouched if encryption fails.
+	 *
+	 * @return array{migrated:string[], failed:string[]} Option names migrated or left due to encrypt failure.
+	 */
+	public static function migrate_secret_options(): array {
+		$result = array( 'migrated' => array(), 'failed' => array() );
+		foreach ( self::secret_option_names() as $option_name ) {
+			$value = get_option( $option_name, '' );
+			if ( ! is_string( $value ) || '' === $value || self::is_encrypted( $value ) ) {
+				continue;
+			}
+			$encrypted = self::encrypt( $value );
+			if ( '' === $encrypted ) {
+				$result['failed'][] = $option_name;
+				continue;
+			}
+			if ( update_option( $option_name, $encrypted ) ) {
+				$result['migrated'][] = $option_name;
+			}
+		}
+		return $result;
+	}
+
 }

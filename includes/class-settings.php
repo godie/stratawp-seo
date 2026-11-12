@@ -1409,28 +1409,21 @@ class SWPS_Settings {
 	 * Get the appropriate sanitize callback for a field type.
 	 */
 	private function get_sanitize_callback( string $type, string $key = '' ): callable {
-		// Encrypt secret keys on save. Preserve existing value on encryption failure.
-		$encrypted_keys = array( 'jon_ai_secret', 'gsc_client_secret', 'opencode_go_api_key' );
-		if ( in_array( $key, $encrypted_keys, true ) ) {
-			$option_name = "swps_{$key}";
+		$option_name = "swps_{$key}";
+		// Encrypt all secret keys on save (centralized). Preserve existing on empty/failure.
+		// IndexNow key is explicitly excluded by SWPS_Encryption::is_secret_option().
+		if ( SWPS_Encryption::is_secret_option( $option_name ) ) {
 			return function ( $value ) use ( $option_name ) {
-				$existing = (string) get_option( $option_name, '' );
-				if ( empty( $value ) ) {
-					// Preserve existing value when field submitted empty.
-					return $existing;
-				}
-				$sanitized = sanitize_text_field( $value );
-				$encrypted = SWPS_Encryption::encrypt( $sanitized );
-				if ( '' === $encrypted && '' !== $sanitized ) {
+				$result = SWPS_Encryption::encrypt_option_for_storage( $option_name, $value );
+				if ( ! empty( $result['error'] ) ) {
 					add_settings_error(
 						$option_name,
 						'swps_encrypt_failed',
 						__( 'Could not encrypt the API key/secret. The existing saved value was kept.', 'stratawp-seo' ),
 						'error'
 					);
-					return $existing;
 				}
-				return $encrypted;
+				return $result['value'];
 			};
 		}
 
@@ -1464,10 +1457,9 @@ class SWPS_Settings {
 		$desc    = $args['description'] ?? '';
 
 		// Never render saved secret values in HTML. For encrypted-at-rest keys,
-		// show a saved indicator (including legacy plaintext until re-saved).
-		$has_saved_secret    = false;
-		$secret_field_keys   = array( 'jon_ai_secret', 'gsc_client_secret', 'opencode_go_api_key' );
-		if ( in_array( $args['key'], $secret_field_keys, true ) && ! empty( $value ) ) {
+		// show a saved indicator (including legacy plaintext until re-saved/migrated).
+		$has_saved_secret = false;
+		if ( SWPS_Encryption::is_secret_option( $name ) && '' !== (string) $value ) {
 			$has_saved_secret = true;
 			$value            = '';
 		}

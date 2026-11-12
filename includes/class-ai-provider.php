@@ -426,9 +426,16 @@ abstract class SWPS_AI_Provider {
 
 	/**
 	 * Get the stored API key for this provider.
+	 *
+	 * Secret provider keys are decrypted at read time (plaintext legacy values
+	 * pass through for migration safety).
 	 */
 	public function get_api_key(): string {
-		return (string) get_option( $this->get_api_key_option(), '' );
+		$option = $this->get_api_key_option();
+		if ( SWPS_Encryption::is_secret_option( $option ) ) {
+			return SWPS_Encryption::get_secret_option( $option, '' );
+		}
+		return (string) get_option( $option, '' );
 	}
 
 	/**

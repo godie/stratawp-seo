@@ -1505,6 +1505,19 @@ final class StrataWP_SEO {
 	}
 }
 
+
+/**
+ * Migrate legacy plaintext provider/secret keys to encrypted-at-rest storage.
+ * Idempotent and failure-safe (leaves values untouched on encrypt failure).
+ */
+function swps_migrate_secret_options(): void {
+	if ( class_exists( 'SWPS_Encryption' ) ) {
+		SWPS_Encryption::migrate_secret_options();
+	}
+}
+add_action( 'admin_init', 'swps_migrate_secret_options', 5 );
+
+
 /**
  * Activation hook.
  */

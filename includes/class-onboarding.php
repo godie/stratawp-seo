@@ -309,15 +309,15 @@ class SWPS_Onboarding {
 		}
 
 		// Key is valid — save through the same option names Settings uses.
-		// Encrypt opencode_go_api_key (fail-safe: preserve existing on encrypt failure).
+		// Encrypt secret provider keys at rest (fail-safe: preserve existing on encrypt failure).
+		$option_name = $provider->get_api_key_option();
 		$value_to_save = $api_key;
-		$option_name   = $provider->get_api_key_option();
-		if ( 'opencode_go_api_key' === $provider_slug || 'swps_opencode_go_api_key' === $option_name ) {
-			$encrypted = SWPS_Encryption::encrypt( $api_key );
-			if ( '' === $encrypted && '' !== $api_key ) {
-				wp_send_json_error( array( 'message' => __( 'Could not encrypt the OpenCode Go API key. The existing saved value was kept.', 'stratawp-seo' ) ) );
+		if ( SWPS_Encryption::is_secret_option( $option_name ) ) {
+			$result = SWPS_Encryption::encrypt_option_for_storage( $option_name, $api_key );
+			if ( ! empty( $result['error'] ) ) {
+				wp_send_json_error( array( 'message' => __( 'Could not encrypt the API key. The existing saved value was kept.', 'stratawp-seo' ) ) );
 			}
-			$value_to_save = $encrypted;
+			$value_to_save = $result['value'];
 		}
 
 		update_option( 'swps_ai_provider', $provider_slug );

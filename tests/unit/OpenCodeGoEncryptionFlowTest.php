@@ -6,7 +6,12 @@ if ( ! function_exists( 'wp_salt' ) ) {
 	function wp_salt( $scheme = 'auth' ) { return 'test-salt-' . $scheme; }
 }
 if ( ! function_exists( 'sanitize_text_field' ) ) {
-	function sanitize_text_field( $str ) { return is_string( $str ) ? trim( $str ) : ''; }
+	function sanitize_text_field( $str ) {
+		if ( ! is_string( $str ) && ! is_numeric( $str ) ) { return ''; }
+		$str = (string) $str;
+		$str = preg_replace( '/[\r\n\t ]+/', ' ', $str );
+		return trim( strip_tags( $str ) );
+	}
 }
 if ( ! function_exists( 'get_option' ) ) {
 	$GLOBALS['swps_test_options'] = $GLOBALS['swps_test_options'] ?? array();
@@ -119,7 +124,15 @@ function update_option($o,$v){$GLOBALS['swps_test_options'][$o]=$v;return true;}
 function add_settings_error($setting,$code,$message,$type='error'){$GLOBALS['swps_test_settings_errors'][]=compact('setting','code','message','type');}
 function add_action(){} function add_filter(){} function register_setting(){} function add_settings_field(){}
 function esc_attr($t){return $t;} function esc_html__($t,$d='default'){return $t;} function esc_html($t){return $t;} function esc_textarea($t){return $t;} function selected(){} function checked(){}
-class SWPS_Encryption { public static function encrypt($v){return '';} public static function decrypt($v){return $v;} public static function is_encrypted($v){return false;} }
+class SWPS_Encryption {
+	public static function secret_option_names(): array { return array('swps_opencode_go_api_key','swps_anthropic_api_key','swps_openai_api_key','swps_google_api_key','swps_xai_api_key','swps_unsplash_api_key','swps_pexels_api_key','swps_pixabay_api_key','swps_jon_ai_secret','swps_gsc_client_secret'); }
+	public static function is_secret_option($o): bool { return in_array($o, self::secret_option_names(), true); }
+	public static function encrypt($v){ return ''; }
+	public static function decrypt($v){ return $v; }
+	public static function is_encrypted($v){ return false; }
+	public static function get_secret_option($o,$d=''){ $v=get_option($o,$d); return is_string($v)?$v:(string)$d; }
+	public static function encrypt_option_for_storage($o,$v){ $existing=(string)get_option($o,''); if($v===null||$v===''){return array('value'=>$existing,'error'=>false);} $enc=self::encrypt((string)$v); if($enc===''){return array('value'=>$existing,'error'=>true);} return array('value'=>$enc,'error'=>false); }
+}
 require $root . '/includes/class-settings.php';
 $settings=new SWPS_Settings();
 $ref=new ReflectionClass($settings); $m=$ref->getMethod('get_sanitize_callback'); $m->setAccessible(true);
@@ -189,7 +202,7 @@ $root = $argv[1] ?? getcwd();
 if (!defined('ABSPATH')) define('ABSPATH','/tmp/wp-fake/');
 function __($t,$d='default'){return $t;}
 function sanitize_text_field($s){return is_string($s)?trim($s):'';}
-function sanitize_key($k){return strtolower(preg_replace('/[^a-z0-9_\-]/','',(string)$k));}
+function sanitize_key($k){$k=strtolower((string)$k); return preg_replace('/[^a-z0-9_\-]/','',$k);}
 function wp_unslash($v){return $v;}
 $GLOBALS['swps_test_options']=['swps_opencode_go_api_key'=>'existing-enc'];
 $GLOBALS['swps_json_errors']=[];
@@ -200,7 +213,15 @@ function wp_send_json_success($d=null){throw new RuntimeException('ok');}
 function check_ajax_referer(){return true;} function current_user_can(){return true;} function add_action(){} function add_filter(){}
 function wp_json_encode($d){return json_encode($d);} function is_wp_error($t){return $t instanceof WP_Error;}
 class WP_Error{public function __construct($c='',$m=''){$this->m=$m;} public function get_error_message(){return $this->m;}}
-class SWPS_Encryption { public static function encrypt($v){return '';} public static function decrypt($v){return $v;} public static function is_encrypted($v){return false;} }
+class SWPS_Encryption {
+	public static function secret_option_names(): array { return array('swps_opencode_go_api_key','swps_anthropic_api_key','swps_openai_api_key','swps_google_api_key','swps_xai_api_key','swps_unsplash_api_key','swps_pexels_api_key','swps_pixabay_api_key','swps_jon_ai_secret','swps_gsc_client_secret'); }
+	public static function is_secret_option($o): bool { return in_array($o, self::secret_option_names(), true); }
+	public static function encrypt($v){ return ''; }
+	public static function decrypt($v){ return $v; }
+	public static function is_encrypted($v){ return false; }
+	public static function get_secret_option($o,$d=''){ $v=get_option($o,$d); return is_string($v)?$v:(string)$d; }
+	public static function encrypt_option_for_storage($o,$v){ $existing=(string)get_option($o,''); if($v===null||$v===''){return array('value'=>$existing,'error'=>false);} $enc=self::encrypt((string)$v); if($enc===''){return array('value'=>$existing,'error'=>true);} return array('value'=>$enc,'error'=>false); }
+}
 require $root . '/includes/class-ai-provider.php';
 class SWPS_OpenCode_Go_Provider extends SWPS_AI_Provider {
 	public function get_slug(): string { return 'opencode_go'; }
