@@ -223,6 +223,12 @@ class SWPS_Encryption {
 	}
 
 	/**
+	 * Option name flag set when plaintext secret migration has completed
+	 * successfully (no remaining plaintext secrets, no encrypt failures).
+	 */
+	public const MIGRATION_COMPLETE_OPTION = 'swps_secret_options_migrated_v1';
+
+	/**
 	 * Secret option names (full option names) that must be encrypted at rest.
 	 * Excludes swps_indexnow_api_key (public key by design).
 	 *
@@ -230,6 +236,7 @@ class SWPS_Encryption {
 	 */
 	public static function secret_option_names(): array {
 		return array(
+			'swps_api_key', // Legacy global key; preserved for legacy copy-to-Anthropic flow.
 			'swps_anthropic_api_key',
 			'swps_openai_api_key',
 			'swps_google_api_key',
@@ -244,30 +251,10 @@ class SWPS_Encryption {
 	}
 
 	/**
-	 * Secret field keys (Settings field key / provider slug fragment) encrypted at rest.
-	 *
-	 * @return string[]
-	 */
-	public static function secret_field_keys(): array {
-		return array(
-			'anthropic_api_key',
-			'openai_api_key',
-			'google_api_key',
-			'xai_api_key',
-			'opencode_go_api_key',
-			'unsplash_api_key',
-			'pexels_api_key',
-			'pixabay_api_key',
-			'jon_ai_secret',
-			'gsc_client_secret',
-		);
-	}
-
-	/**
 	 * Whether a full option name is a secret stored encrypted at rest.
 	 */
 	public static function is_secret_option( string $option_name ): bool {
-		return in_array( $option_name, self::secret_option_names(), true );
+		return in_array( $option_name, static::secret_option_names(), true );
 	}
 
 	/**
@@ -280,7 +267,7 @@ class SWPS_Encryption {
 		if ( ! is_string( $value ) || '' === $value ) {
 			return is_string( $value ) ? $value : (string) $default;
 		}
-		return self::decrypt( $value );
+		return static::decrypt( $value );
 	}
 
 	/**
@@ -299,7 +286,7 @@ class SWPS_Encryption {
 		if ( '' === $sanitized ) {
 			return array( 'value' => $existing, 'error' => false );
 		}
-		$encrypted = self::encrypt( $sanitized );
+		$encrypted = static::encrypt( $sanitized );
 		if ( '' === $encrypted ) {
 			return array( 'value' => $existing, 'error' => true );
 		}
@@ -310,27 +297,88 @@ class SWPS_Encryption {
 	 * Migrate plaintext secret options to encrypted-at-rest values.
 	 *
 	 * Idempotent and failure-safe: encrypts only non-empty non-encrypted values;
-	 * leaves values untouched if encryption fails.
+	 * leaves values untouched if encryption fails. Uses compare-and-swap so a
+	 * concurrently saved/new value is never overwritten by migration.
 	 *
-	 * @return array{migrated:string[], failed:string[]} Option names migrated or left due to encrypt failure.
+	 * @return array{migrated:string[], failed:string[], skipped:string[], complete:bool}
 	 */
 	public static function migrate_secret_options(): array {
-		$result = array( 'migrated' => array(), 'failed' => array() );
-		foreach ( self::secret_option_names() as $option_name ) {
+		$result = array( 'migrated' => array(), 'failed' => array(), 'skipped' => array(), 'complete' => false );
+		foreach ( static::secret_option_names() as $option_name ) {
 			$value = get_option( $option_name, '' );
-			if ( ! is_string( $value ) || '' === $value || self::is_encrypted( $value ) ) {
+			if ( ! is_string( $value ) || '' === $value || static::is_encrypted( $value ) ) {
 				continue;
 			}
-			$encrypted = self::encrypt( $value );
+			$encrypted = static::encrypt( $value );
 			if ( '' === $encrypted ) {
 				$result['failed'][] = $option_name;
 				continue;
 			}
-			if ( update_option( $option_name, $encrypted ) ) {
+
+			// Compare-and-swap: only update if option value still equals the value read.
+			$updated = static::compare_and_swap_option( $option_name, $value, $encrypted );
+			if ( $updated ) {
 				$result['migrated'][] = $option_name;
+			} else {
+				// Changed concurrently (e.g. newly saved) or write failed; do not clobber.
+				$result['skipped'][] = $option_name;
 			}
 		}
+
+		// Completion flag: safe to skip future scans only when no plaintext remains
+		// and no encrypt failures occurred (so failures can be retried).
+		if ( empty( $result['failed'] ) && ! static::has_unencrypted_secret_options() ) {
+			$result['complete'] = true;
+			update_option( static::MIGRATION_COMPLETE_OPTION, 1, false );
+		}
+
 		return $result;
+	}
+
+	/**
+	 * Whether any configured secret option still contains a non-empty plaintext value.
+	 */
+	public static function has_unencrypted_secret_options(): bool {
+		foreach ( static::secret_option_names() as $option_name ) {
+			$value = get_option( $option_name, '' );
+			if ( is_string( $value ) && '' !== $value && ! static::is_encrypted( $value ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Update an option only if its stored value still matches $expected (compare-and-swap).
+	 *
+	 * @return bool True if the expected value was replaced.
+	 */
+	protected static function compare_and_swap_option( string $option_name, string $expected, string $new_value ): bool {
+		global $wpdb;
+		if ( isset( $wpdb ) && is_object( $wpdb ) && isset( $wpdb->options ) && method_exists( $wpdb, 'update' ) ) {
+			$rows = $wpdb->update(
+				$wpdb->options,
+				array( 'option_value' => $new_value ),
+				array( 'option_name' => $option_name, 'option_value' => $expected )
+			);
+			if ( false !== $rows && 0 !== $rows ) {
+				if ( function_exists( 'wp_cache_delete' ) ) {
+					wp_cache_delete( $option_name, 'options' );
+					wp_cache_delete( 'alloptions', 'options' );
+					wp_cache_delete( 'notoptions', 'options' );
+				}
+				return true;
+			}
+			if ( false !== $rows ) {
+				return false; // 0 rows: value changed concurrently or already different.
+			}
+			// Fall through to WP option API on DB error/unexpected path.
+		}
+
+		if ( get_option( $option_name, null ) !== $expected ) {
+			return false;
+		}
+		return (bool) update_option( $option_name, $new_value );
 	}
 
 }

@@ -652,8 +652,13 @@ final class StrataWP_SEO {
 			return;
 		}
 
-		$legacy_key = get_option( 'swps_api_key', '' );
-		if ( ! empty( $legacy_key ) && empty( get_option( 'swps_anthropic_api_key', '' ) ) ) {
+		$legacy_key = (string) get_option( 'swps_api_key', '' );
+		if ( '' !== $legacy_key && class_exists( 'SWPS_Encryption' ) ) {
+			// Preserve legacy flow: read decrypted value if legacy key was encrypted at rest.
+			$legacy_key = SWPS_Encryption::decrypt( $legacy_key );
+		}
+		if ( '' !== $legacy_key && '' === (string) get_option( 'swps_anthropic_api_key', '' ) ) {
+			// Copy to Anthropic without deleting/clearing the legacy option.
 			update_option( 'swps_anthropic_api_key', $legacy_key );
 		}
 
@@ -1509,11 +1514,30 @@ final class StrataWP_SEO {
 /**
  * Migrate legacy plaintext provider/secret keys to encrypted-at-rest storage.
  * Idempotent and failure-safe (leaves values untouched on encrypt failure).
+ * Skips when a completion flag indicates no plaintext secrets remain.
+ *
+ * PRODUCTION REQUIREMENTS (before running/enabling on production data):
+ * - Backup: take a full DB backup (at minimum wp_options rows for swps_* keys/secrets
+ *   including legacy swps_api_key and swps_indexnow_api_key-excluded public key context)
+ *   and keep provider secrets available out-of-band for recovery.
+ * - Salt rotation: encryption key derives from WP salts (wp_salt). If salts are rotated,
+ *   stored ciphertext cannot be decrypted; reads fail safe to empty and keys must be
+ *   re-entered. Do not rotate salts without a recovery plan.
+ * - Rollback: restore DB backup and/or revert to pre-migration code. Encrypted values
+ *   require original salts+crypto implementation to decrypt; plaintext legacy values and
+ *   untouched-on-failure values remain usable as before.
+ * - Safety: migration uses compare-and-swap (never overwrites concurrently saved values),
+ *   does not delete/clear legacy swps_api_key, excludes swps_indexnow_api_key, and retries
+ *   only while failures/plaintext remain (no completion flag on failure).
  */
 function swps_migrate_secret_options(): void {
-	if ( class_exists( 'SWPS_Encryption' ) ) {
-		SWPS_Encryption::migrate_secret_options();
+	if ( ! class_exists( 'SWPS_Encryption' ) ) {
+		return;
 	}
+	if ( get_option( SWPS_Encryption::MIGRATION_COMPLETE_OPTION ) && ! SWPS_Encryption::has_unencrypted_secret_options() ) {
+		return;
+	}
+	SWPS_Encryption::migrate_secret_options();
 }
 add_action( 'admin_init', 'swps_migrate_secret_options', 5 );
 
