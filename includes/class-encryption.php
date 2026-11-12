@@ -404,10 +404,12 @@ class SWPS_Encryption {
 		global $wpdb;
 		if ( isset( $wpdb ) && is_object( $wpdb ) && isset( $wpdb->options ) ) {
 			$table = $wpdb->options;
+			$db_cas_available = false;
 			$rows = false;
 
 			// Prefer exact binary comparison to avoid case-insensitive collation masking changes.
 			if ( method_exists( $wpdb, 'prepare' ) && method_exists( $wpdb, 'query' ) ) {
+				$db_cas_available = true;
 				$sql = $wpdb->prepare(
 					"UPDATE {$table} SET option_value = %s WHERE option_name = %s AND option_value = BINARY %s",
 					$new_value,
@@ -418,6 +420,7 @@ class SWPS_Encryption {
 					$rows = $wpdb->query( $sql );
 				}
 			} elseif ( method_exists( $wpdb, 'update' ) ) {
+				$db_cas_available = true;
 				// Fallback: wpdb->update cannot express BINARY; still compare-and-swap by value.
 				$rows = $wpdb->update(
 					$table,
@@ -426,8 +429,8 @@ class SWPS_Encryption {
 				);
 			}
 
-			if ( false !== $rows ) {
-				if ( 0 !== $rows && 0 !== (int) $rows ) {
+			if ( $db_cas_available ) {
+				if ( false !== $rows && 0 !== $rows && 0 !== (int) $rows ) {
 					if ( function_exists( 'wp_cache_delete' ) ) {
 						wp_cache_delete( $option_name, 'options' );
 						wp_cache_delete( 'alloptions', 'options' );
@@ -435,9 +438,11 @@ class SWPS_Encryption {
 					}
 					return true;
 				}
-				return false; // 0 rows: value changed concurrently or no match.
+				// 0 rows (concurrent change/no match) or DB error (query/update returned false):
+				// fail safely when DB CAS is available so migration can retry later; never
+				// fall through to non-atomic get_option()/update_option().
+				return false;
 			}
-			// DB error: fall through to strict option-API check.
 		}
 
 		$current = get_option( $option_name, null );

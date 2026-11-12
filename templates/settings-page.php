@@ -34,6 +34,8 @@ $default  = $tab_keys[0] ?? 'ai-content';
 		</p>
 	</div>
 
+	<?php settings_errors(); ?>
+
 	<div class="nav-tab-wrapper swps-settings-tabs" role="tablist">
 		<?php foreach ( $tabs as $key => $tab ) : ?>
 			<a

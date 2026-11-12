@@ -73,9 +73,15 @@ class SWPS_Mock_WPDB {
 	public $last_prepare_args = array();
 	public $last_query = null;
 	public $queries = array();
-	public $query_rows = 0;
+	public $query_rows = 0; // used when simulate_cas is false
 	public $update_calls = array();
 	public $update_rows = 0;
+	/** @var array<string,string> modeled stored option values for CAS simulation */
+	public $stored = array();
+	/** @var bool when true, query() simulates binary/exact CAS update against $stored */
+	public $simulate_cas = false;
+	/** @var bool|int|null force query() result (e.g. false for DB error) */
+	public $force_query_result = null;
 
 	public function prepare( $query, ...$args ) {
 		$this->last_prepare = $query;
@@ -93,6 +99,22 @@ class SWPS_Mock_WPDB {
 	public function query( $sql ) {
 		$this->last_query = $sql;
 		$this->queries[] = $sql;
+		if ( null !== $this->force_query_result ) {
+			return $this->force_query_result;
+		}
+		if ( $this->simulate_cas && is_array( $this->last_prepare_args ) && count( $this->last_prepare_args ) === 3 ) {
+			// args: [new_value, option_name, expected]
+			$new = (string) $this->last_prepare_args[0];
+			$name = (string) $this->last_prepare_args[1];
+			$expected = (string) $this->last_prepare_args[2];
+			$current = array_key_exists( $name, $this->stored ) ? (string) $this->stored[ $name ] : null;
+			// Binary/exact comparison semantics.
+			if ( null !== $current && 0 === strcmp( $current, $expected ) ) {
+				$this->stored[ $name ] = $new;
+				return 1;
+			}
+			return 0;
+		}
 		return $this->query_rows;
 	}
 
@@ -264,8 +286,12 @@ final class AllProviderKeysEncryptionTest extends TestCase {
 			SWPS_Test_Encryption::$fail_plaintexts = array( 'new' );
 			$result = SWPS_Test_Encryption::encrypt_option_for_storage( $opt, 'new' );
 			SWPS_Test_Encryption::reset();
+			// Real storage helper (SWPS_Encryption::encrypt_option_for_storage via static::) exercised:
+			// encrypt failure must flag error, preserve existing saved value, never store new plaintext/empty.
 			$this->assertTrue( $result['error'], "$opt failure flagged" );
 			$this->assertSame( 'existing-' . $opt, $result['value'], "$opt preserved on failure" );
+			$this->assertNotSame( 'new', $result['value'], "$opt must not store new plaintext on encrypt failure" );
+			$this->assertNotSame( '', $result['value'], "$opt must not clear existing on encrypt failure" );
 		}
 	}
 
@@ -401,10 +427,12 @@ final class AllProviderKeysEncryptionTest extends TestCase {
 	public function test_real_compare_and_swap_option_db_path_uses_binary_exact_match_and_handles_zero_row_race(): void {
 		$mock = new SWPS_Mock_WPDB();
 		$mock->options = 'wp_options';
+		$mock->simulate_cas = true;
+		$mock->stored['swps_anthropic_api_key'] = 'OldPlain';
 		$GLOBALS['wpdb'] = $mock;
 
-		// Successful CAS: asserts real DB path uses option_name + option_value conditions with BINARY exact compare.
-		$mock->query_rows = 1;
+		// Successful CAS: asserts real DB path uses option_name + option_value conditions with BINARY exact compare,
+		// and modeled DB state is updated only on exact match.
 		$ok = SWPS_Encryption::compare_and_swap_option( 'swps_anthropic_api_key', 'OldPlain', 'encrypted:new' );
 		$this->assertTrue( $ok, 'CAS should succeed when DB reports 1 row updated' );
 		$this->assertStringContainsString( 'UPDATE wp_options', (string) $mock->last_prepare );
@@ -413,24 +441,40 @@ final class AllProviderKeysEncryptionTest extends TestCase {
 		$this->assertSame( array( 'encrypted:new', 'swps_anthropic_api_key', 'OldPlain' ), $mock->last_prepare_args );
 		$this->assertNotNull( $mock->last_query );
 		$this->assertStringContainsString( 'BINARY', (string) $mock->last_query );
+		$this->assertSame( 'encrypted:new', $mock->stored['swps_anthropic_api_key'], 'modeled DB value updated on exact match' );
 
-		// 0-row race case: value changed concurrently -> must not overwrite.
+		// 0-row race case: concurrent DB value differs (including case-only difference under ci collation,
+		// but BINARY exact compare must not match) -> must not overwrite modeled stored state.
 		$mock2 = new SWPS_Mock_WPDB();
 		$mock2->options = 'wp_options';
-		$mock2->query_rows = 0;
+		$mock2->simulate_cas = true;
+		$mock2->stored['swps_anthropic_api_key'] = 'oldplain'; // concurrent value in DB
 		$GLOBALS['wpdb'] = $mock2;
-		update_option( 'swps_anthropic_api_key', 'oldplain' ); // concurrent/different-case value present
+		update_option( 'swps_anthropic_api_key', 'oldplain' ); // option cache/store view
 		$race = SWPS_Encryption::compare_and_swap_option( 'swps_anthropic_api_key', 'OldPlain', 'encrypted:new' );
 		$this->assertFalse( $race, '0-row race/changed value must return false' );
-		$this->assertSame( 'oldplain', get_option( 'swps_anthropic_api_key' ), 'concurrent/changed value must not be overwritten' );
+		$this->assertSame( 'oldplain', $mock2->stored['swps_anthropic_api_key'], 'concurrent DB value must not be overwritten' );
+		$this->assertSame( 'oldplain', get_option( 'swps_anthropic_api_key' ), 'concurrent value must remain unchanged' );
+
+		// DB error (query=false): DB CAS available but query fails -> fail safely, no non-atomic fallback, retry later.
+		$mock3 = new SWPS_Mock_WPDB();
+		$mock3->options = 'wp_options';
+		$mock3->stored['swps_openai_api_key'] = 'OldPlain';
+		$mock3->force_query_result = false;
+		$GLOBALS['wpdb'] = $mock3;
+		update_option( 'swps_openai_api_key', 'OldPlain' );
+		$err = SWPS_Encryption::compare_and_swap_option( 'swps_openai_api_key', 'OldPlain', 'encrypted:new' );
+		$this->assertFalse( $err, 'query=false must fail safely when DB CAS is available' );
+		$this->assertSame( 'OldPlain', $mock3->stored['swps_openai_api_key'], 'DB value must not be overwritten on query error' );
+		$this->assertSame( 'OldPlain', get_option( 'swps_openai_api_key' ), 'must not fall through to non-atomic update on DB error' );
 
 		unset( $GLOBALS['wpdb'] );
 
 		// Fallback path (no $wpdb): strict string comparison via strcmp, not ==.
-		update_option( 'swps_openai_api_key', 'oldplain' );
-		$strict = SWPS_Encryption::compare_and_swap_option( 'swps_openai_api_key', 'OldPlain', 'encrypted:new' );
+		update_option( 'swps_xai_api_key', 'oldplain' );
+		$strict = SWPS_Encryption::compare_and_swap_option( 'swps_xai_api_key', 'OldPlain', 'encrypted:new' );
 		$this->assertFalse( $strict, 'fallback must reject case-different value (exact comparison)' );
-		$this->assertSame( 'oldplain', get_option( 'swps_openai_api_key' ) );
+		$this->assertSame( 'oldplain', get_option( 'swps_xai_api_key' ) );
 	}
 
 	public function test_real_migration_guard_helper(): void {

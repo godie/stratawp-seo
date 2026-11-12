@@ -148,8 +148,12 @@ PHP;
 		$this->assertNotNull($out);
 		$decoded = json_decode((string) $out, true);
 		$this->assertIsArray($decoded, 'Expected JSON output, got: ' . (string) $out);
-		$this->assertSame('existing-plain', $decoded['r'] ?? null); // preserved
-		$this->assertNotEmpty($decoded['e'] ?? array()); // settings error surfaced
+		// Real settings sanitize handler exercised; storage contract on encrypt failure:
+		// existing saved value preserved, new plaintext not stored, settings error surfaced.
+		$this->assertSame('existing-plain', $decoded['r'] ?? null, 'existing value must be preserved');
+		$this->assertNotSame('new-secret', $decoded['r'] ?? null, 'new plaintext must not be stored on encrypt failure');
+		$this->assertNotEmpty($decoded['e'] ?? array(), 'settings error must be surfaced');
+		$this->assertSame('swps_encrypt_failed', $decoded['e'][0]['code'] ?? null);
 	}
 
 	public function test_settings_render_blanks_saved_secret_field_plaintext_and_encrypted(): void {
@@ -245,7 +249,11 @@ PHP;
 		$this->assertNotNull($out);
 		$decoded = json_decode((string) $out, true);
 		$this->assertIsArray($decoded, 'Expected JSON output, got: ' . (string) $out);
+		// Real onboarding handler exercised; storage contract on encrypt failure:
+		// error returned, existing saved value preserved, new plaintext never stored.
 		$this->assertNotEmpty($decoded['err'] ?? array(), 'Onboarding should error on encrypt failure');
 		$this->assertSame('existing-enc', $decoded['saved'] ?? null, 'Existing key must be preserved on encrypt failure');
+		$this->assertNotSame('new-key', $decoded['saved'] ?? null, 'New plaintext must not be stored on encrypt failure');
+		$this->assertNotSame('', $decoded['saved'] ?? null, 'Existing value must not be cleared on encrypt failure');
 	}
 }
