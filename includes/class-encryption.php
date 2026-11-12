@@ -336,6 +336,50 @@ class SWPS_Encryption {
 	}
 
 	/**
+	 * Production migration guard: run migration only when needed.
+	 *
+	 * Skips when completion flag is set AND no plaintext secrets remain, so it is
+	 * safe and cheap on subsequent admin requests while still retryable after failure.
+	 *
+	 * @return array{migrated:string[], failed:string[], skipped:string[], complete:bool}|null
+	 *         Migration result, or null if skipped by guard.
+	 */
+	public static function maybe_migrate_secret_options(): ?array {
+		if ( get_option( static::MIGRATION_COMPLETE_OPTION ) && ! static::has_unencrypted_secret_options() ) {
+			return null;
+		}
+		return static::migrate_secret_options();
+	}
+
+	/**
+	 * Copy legacy swps_api_key into swps_anthropic_api_key when the target is empty.
+	 *
+	 * Preserves legacy option (never deletes/clears it) and only copies when the
+	 * Anthropic key is empty. Reads decrypted legacy value if stored encrypted.
+	 *
+	 * @return array{copied:bool, legacy_present:bool, target_was_empty:bool}
+	 */
+	public static function migrate_legacy_api_key_to_anthropic(): array {
+		$legacy_raw = get_option( 'swps_api_key', '' );
+		$legacy_present = is_string( $legacy_raw ) && '' !== $legacy_raw;
+		$legacy_value = $legacy_present ? static::decrypt( $legacy_raw ) : '';
+		$target = get_option( 'swps_anthropic_api_key', '' );
+		$target_empty = ! is_string( $target ) || '' === $target;
+
+		$copied = false;
+		if ( '' !== $legacy_value && $target_empty ) {
+			update_option( 'swps_anthropic_api_key', $legacy_value );
+			$copied = true;
+		}
+
+		return array(
+			'copied'          => $copied,
+			'legacy_present'  => $legacy_present,
+			'target_was_empty'=> $target_empty,
+		);
+	}
+
+	/**
 	 * Whether any configured secret option still contains a non-empty plaintext value.
 	 */
 	public static function has_unencrypted_secret_options(): bool {
@@ -351,31 +395,53 @@ class SWPS_Encryption {
 	/**
 	 * Update an option only if its stored value still matches $expected (compare-and-swap).
 	 *
+	 * Uses binary/exact option_value comparison so case-insensitive DB collation
+	 * cannot treat a changed value as equal.
+	 *
 	 * @return bool True if the expected value was replaced.
 	 */
-	protected static function compare_and_swap_option( string $option_name, string $expected, string $new_value ): bool {
+	public static function compare_and_swap_option( string $option_name, string $expected, string $new_value ): bool {
 		global $wpdb;
-		if ( isset( $wpdb ) && is_object( $wpdb ) && isset( $wpdb->options ) && method_exists( $wpdb, 'update' ) ) {
-			$rows = $wpdb->update(
-				$wpdb->options,
-				array( 'option_value' => $new_value ),
-				array( 'option_name' => $option_name, 'option_value' => $expected )
-			);
-			if ( false !== $rows && 0 !== $rows ) {
-				if ( function_exists( 'wp_cache_delete' ) ) {
-					wp_cache_delete( $option_name, 'options' );
-					wp_cache_delete( 'alloptions', 'options' );
-					wp_cache_delete( 'notoptions', 'options' );
+		if ( isset( $wpdb ) && is_object( $wpdb ) && isset( $wpdb->options ) ) {
+			$table = $wpdb->options;
+			$rows = false;
+
+			// Prefer exact binary comparison to avoid case-insensitive collation masking changes.
+			if ( method_exists( $wpdb, 'prepare' ) && method_exists( $wpdb, 'query' ) ) {
+				$sql = $wpdb->prepare(
+					"UPDATE {$table} SET option_value = %s WHERE option_name = %s AND option_value = BINARY %s",
+					$new_value,
+					$option_name,
+					$expected
+				);
+				if ( false !== $sql ) {
+					$rows = $wpdb->query( $sql );
 				}
-				return true;
+			} elseif ( method_exists( $wpdb, 'update' ) ) {
+				// Fallback: wpdb->update cannot express BINARY; still compare-and-swap by value.
+				$rows = $wpdb->update(
+					$table,
+					array( 'option_value' => $new_value ),
+					array( 'option_name' => $option_name, 'option_value' => $expected )
+				);
 			}
+
 			if ( false !== $rows ) {
-				return false; // 0 rows: value changed concurrently or already different.
+				if ( 0 !== $rows && 0 !== (int) $rows ) {
+					if ( function_exists( 'wp_cache_delete' ) ) {
+						wp_cache_delete( $option_name, 'options' );
+						wp_cache_delete( 'alloptions', 'options' );
+						wp_cache_delete( 'notoptions', 'options' );
+					}
+					return true;
+				}
+				return false; // 0 rows: value changed concurrently or no match.
 			}
-			// Fall through to WP option API on DB error/unexpected path.
+			// DB error: fall through to strict option-API check.
 		}
 
-		if ( get_option( $option_name, null ) !== $expected ) {
+		$current = get_option( $option_name, null );
+		if ( ! is_string( $current ) || 0 !== strcmp( $current, $expected ) ) {
 			return false;
 		}
 		return (bool) update_option( $option_name, $new_value );

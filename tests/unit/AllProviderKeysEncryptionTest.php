@@ -66,6 +66,42 @@ require_once __DIR__ . '/../../includes/providers/images/class-gemini-provider.p
 require_once __DIR__ . '/../../includes/class-image-inserter.php';
 require_once __DIR__ . '/../../includes/class-onboarding.php';
 
+
+class SWPS_Mock_WPDB {
+	public $options = 'wp_options';
+	public $last_prepare = null;
+	public $last_prepare_args = array();
+	public $last_query = null;
+	public $queries = array();
+	public $query_rows = 0;
+	public $update_calls = array();
+	public $update_rows = 0;
+
+	public function prepare( $query, ...$args ) {
+		$this->last_prepare = $query;
+		if ( count( $args ) === 1 && is_array( $args[0] ) ) {
+			$args = $args[0];
+		}
+		$this->last_prepare_args = $args;
+		$prepared = $query;
+		foreach ( $args as $a ) {
+			$prepared = preg_replace( '/%s/', "'" . str_replace("'", "\\'", (string) $a) . "'", $prepared, 1 );
+		}
+		return $prepared;
+	}
+
+	public function query( $sql ) {
+		$this->last_query = $sql;
+		$this->queries[] = $sql;
+		return $this->query_rows;
+	}
+
+	public function update( $table, $data, $where ) {
+		$this->update_calls[] = array( 'table' => $table, 'data' => $data, 'where' => $where );
+		return $this->update_rows;
+	}
+}
+
 /**
  * Test double that exercises the REAL migrate_secret_options() loop/hook via
  * late static binding, while allowing controlled encrypt failure and CAS race.
@@ -83,7 +119,7 @@ class SWPS_Test_Encryption extends SWPS_Encryption {
 		return parent::encrypt( $value );
 	}
 
-	protected static function compare_and_swap_option( string $option_name, string $expected, string $new_value ): bool {
+	public static function compare_and_swap_option( string $option_name, string $expected, string $new_value ): bool {
 		if ( in_array( $option_name, self::$race_for, true ) ) {
 			// Simulate a concurrent save that changed the value after read.
 			update_option( $option_name, 'concurrently-saved-' . $option_name );
@@ -314,11 +350,10 @@ final class AllProviderKeysEncryptionTest extends TestCase {
 		$hook();
 		$this->assertTrue( SWPS_Encryption::is_encrypted( get_option( 'swps_unsplash_api_key' ) ) );
 
-		// Sanity: production wires this hook.
+		// Sanity: production wires this hook through the real guard helper.
 		$plugin = file_get_contents( __DIR__ . '/../../stratawp-seo.php' );
 		$this->assertStringContainsString( "add_action( 'admin_init', 'swps_migrate_secret_options', 5 );", $plugin );
-		$this->assertStringContainsString( 'SWPS_Encryption::MIGRATION_COMPLETE_OPTION', $plugin );
-		$this->assertStringContainsString( 'SWPS_Encryption::migrate_secret_options();', $plugin );
+		$this->assertStringContainsString( 'SWPS_Encryption::maybe_migrate_secret_options();', $plugin );
 	}
 
 	public function test_migration_compare_and_swap_does_not_overwrite_concurrent_new_save(): void {
@@ -362,4 +397,91 @@ final class AllProviderKeysEncryptionTest extends TestCase {
 		$this->assertTrue( SWPS_Encryption::is_encrypted( get_option( 'swps_anthropic_api_key' ) ) );
 		$this->assertTrue( SWPS_Encryption::is_encrypted( get_option( 'swps_api_key' ) ), 'legacy still present and encrypted' );
 	}
+
+	public function test_real_compare_and_swap_option_db_path_uses_binary_exact_match_and_handles_zero_row_race(): void {
+		$mock = new SWPS_Mock_WPDB();
+		$mock->options = 'wp_options';
+		$GLOBALS['wpdb'] = $mock;
+
+		// Successful CAS: asserts real DB path uses option_name + option_value conditions with BINARY exact compare.
+		$mock->query_rows = 1;
+		$ok = SWPS_Encryption::compare_and_swap_option( 'swps_anthropic_api_key', 'OldPlain', 'encrypted:new' );
+		$this->assertTrue( $ok, 'CAS should succeed when DB reports 1 row updated' );
+		$this->assertStringContainsString( 'UPDATE wp_options', (string) $mock->last_prepare );
+		$this->assertStringContainsString( 'option_name = %s', (string) $mock->last_prepare );
+		$this->assertStringContainsString( 'option_value = BINARY %s', (string) $mock->last_prepare, 'must use binary/exact option_value comparison' );
+		$this->assertSame( array( 'encrypted:new', 'swps_anthropic_api_key', 'OldPlain' ), $mock->last_prepare_args );
+		$this->assertNotNull( $mock->last_query );
+		$this->assertStringContainsString( 'BINARY', (string) $mock->last_query );
+
+		// 0-row race case: value changed concurrently -> must not overwrite.
+		$mock2 = new SWPS_Mock_WPDB();
+		$mock2->options = 'wp_options';
+		$mock2->query_rows = 0;
+		$GLOBALS['wpdb'] = $mock2;
+		update_option( 'swps_anthropic_api_key', 'oldplain' ); // concurrent/different-case value present
+		$race = SWPS_Encryption::compare_and_swap_option( 'swps_anthropic_api_key', 'OldPlain', 'encrypted:new' );
+		$this->assertFalse( $race, '0-row race/changed value must return false' );
+		$this->assertSame( 'oldplain', get_option( 'swps_anthropic_api_key' ), 'concurrent/changed value must not be overwritten' );
+
+		unset( $GLOBALS['wpdb'] );
+
+		// Fallback path (no $wpdb): strict string comparison via strcmp, not ==.
+		update_option( 'swps_openai_api_key', 'oldplain' );
+		$strict = SWPS_Encryption::compare_and_swap_option( 'swps_openai_api_key', 'OldPlain', 'encrypted:new' );
+		$this->assertFalse( $strict, 'fallback must reject case-different value (exact comparison)' );
+		$this->assertSame( 'oldplain', get_option( 'swps_openai_api_key' ) );
+	}
+
+	public function test_real_migration_guard_helper(): void {
+		// Complete + no plaintext => guard skips.
+		update_option( SWPS_Encryption::MIGRATION_COMPLETE_OPTION, 1 );
+		update_option( 'swps_anthropic_api_key', SWPS_Encryption::encrypt( 'x' ) );
+		$this->assertNull( SWPS_Encryption::maybe_migrate_secret_options(), 'guard should skip when complete and no plaintext' );
+
+		// Flag set but plaintext remains => guard runs real migration.
+		update_option( SWPS_Encryption::MIGRATION_COMPLETE_OPTION, 1 );
+		update_option( 'swps_openai_api_key', 'plain-openai' );
+		$res = SWPS_Encryption::maybe_migrate_secret_options();
+		$this->assertIsArray( $res );
+		$this->assertTrue( SWPS_Encryption::is_encrypted( get_option( 'swps_openai_api_key' ) ) );
+
+		// Not complete with plaintext => runs.
+		update_option( SWPS_Encryption::MIGRATION_COMPLETE_OPTION, 0 );
+		update_option( 'swps_google_api_key', 'plain-google' );
+		$res2 = SWPS_Encryption::maybe_migrate_secret_options();
+		$this->assertIsArray( $res2 );
+		$this->assertContains( 'swps_google_api_key', $res2['migrated'] );
+		$this->assertTrue( SWPS_Encryption::is_encrypted( get_option( 'swps_google_api_key' ) ) );
+	}
+
+	public function test_real_legacy_api_key_copy_helper_preserves_old_option_and_only_copies_when_target_empty(): void {
+		update_option( 'swps_api_key', SWPS_Encryption::encrypt( 'legacy-secret' ) );
+		update_option( 'swps_anthropic_api_key', '' );
+		$res = SWPS_Encryption::migrate_legacy_api_key_to_anthropic();
+		$this->assertTrue( $res['copied'] );
+		$this->assertTrue( $res['legacy_present'] );
+		$this->assertTrue( $res['target_was_empty'] );
+		$this->assertSame( 'legacy-secret', get_option( 'swps_anthropic_api_key' ), 'copied decrypted legacy value' );
+		$this->assertSame( 'legacy-secret', SWPS_Encryption::decrypt( get_option( 'swps_api_key', '' ) ), 'legacy option preserved (not deleted/cleared)' );
+		$this->assertTrue( SWPS_Encryption::is_encrypted( get_option( 'swps_api_key' ) ), 'legacy value remains as stored' );
+
+		// Does NOT copy when target already non-empty.
+		update_option( 'swps_api_key', SWPS_Encryption::encrypt( 'legacy-secret-2' ) );
+		update_option( 'swps_anthropic_api_key', 'existing-anthropic' );
+		$res2 = SWPS_Encryption::migrate_legacy_api_key_to_anthropic();
+		$this->assertFalse( $res2['copied'] );
+		$this->assertFalse( $res2['target_was_empty'] );
+		$this->assertSame( 'existing-anthropic', get_option( 'swps_anthropic_api_key' ), 'must not overwrite non-empty target' );
+		$this->assertSame( 'legacy-secret-2', SWPS_Encryption::decrypt( get_option( 'swps_api_key', '' ) ), 'legacy still preserved' );
+
+		// No legacy present => no copy.
+		update_option( 'swps_api_key', '' );
+		update_option( 'swps_anthropic_api_key', '' );
+		$res3 = SWPS_Encryption::migrate_legacy_api_key_to_anthropic();
+		$this->assertFalse( $res3['copied'] );
+		$this->assertFalse( $res3['legacy_present'] );
+		$this->assertSame( '', get_option( 'swps_anthropic_api_key' ) );
+	}
+
 }
