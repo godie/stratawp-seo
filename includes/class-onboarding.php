@@ -288,6 +288,7 @@ class SWPS_Onboarding {
 			'openai'    => 'SWPS_OpenAI_Provider',
 			'google'    => 'SWPS_Google_Provider',
 			'xai'       => 'SWPS_XAI_Provider',
+			'opencode_go' => 'SWPS_OpenCode_Go_Provider',
 		);
 
 		if ( ! isset( $provider_classes[ $provider_slug ] ) ) {

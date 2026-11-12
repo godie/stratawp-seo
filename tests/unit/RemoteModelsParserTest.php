@@ -6,6 +6,7 @@ require_once __DIR__ . '/../../includes/providers/ai/class-anthropic-provider.ph
 require_once __DIR__ . '/../../includes/providers/ai/class-openai-provider.php';
 require_once __DIR__ . '/../../includes/providers/ai/class-google-provider.php';
 require_once __DIR__ . '/../../includes/providers/ai/class-xai-provider.php';
+require_once __DIR__ . '/../../includes/providers/ai/class-opencode-go-provider.php';
 
 final class RemoteModelsParserTest extends TestCase {
 
@@ -84,5 +85,43 @@ final class RemoteModelsParserTest extends TestCase {
 		$this->assertArrayNotHasKey( 'lyria-3-pro-preview', $out );
 		$this->assertArrayNotHasKey( 'gemini-robotics-er-1.5-preview', $out );
 		$this->assertArrayNotHasKey( 'nano-banana-pro-preview', $out );
+	}
+
+
+	public function test_opencode_go_keeps_chat_completions_only(): void {
+		$body = array(
+			'data' => array(
+				array(
+					'id'   => 'deepseek-v4.1-flash',
+					'name' => 'DeepSeek V4.1 Flash 1017',
+					'api'  => array( 'chat-completions' => array( 'base_url' => 'x' ) ),
+				),
+				array(
+					'id'   => 'grok-4.7',
+					'name' => 'Grok 4.7',
+					'api'  => array( 'responses' => array( 'base_url' => 'x' ) ),
+				),
+				array(
+					'id'   => 'claude-haiku-5-5',
+					'name' => 'Claude Haiku 5.5',
+					'api'  => array( 'messages' => array( 'base_url' => 'x' ) ),
+				),
+				array(
+					'id'   => 'gemini-4-argon',
+					'name' => 'Gemini 4 Argon',
+					'api'  => array( 'generate-content' => array( 'base_url' => 'x' ) ),
+				),
+			),
+		);
+		$out = SWPS_OpenCode_Go_Provider::parse_models_response( $body );
+		$this->assertSame(
+			array( 'deepseek-v4.1-flash' => 'DeepSeek V4.1 Flash 1017' ),
+			$out
+		);
+	}
+
+	public function test_opencode_go_parse_malformed_body_returns_empty(): void {
+		$this->assertSame( array(), SWPS_OpenCode_Go_Provider::parse_models_response( array() ) );
+		$this->assertSame( array(), SWPS_OpenCode_Go_Provider::parse_models_response( array( 'data' => array( array( 'id' => 'x' ) ) ) ) );
 	}
 }
