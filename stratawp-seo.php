@@ -38,6 +38,7 @@ require_once SWPS_PLUGIN_DIR . 'includes/providers/ai/class-anthropic-provider.p
 require_once SWPS_PLUGIN_DIR . 'includes/providers/ai/class-openai-provider.php';
 require_once SWPS_PLUGIN_DIR . 'includes/providers/ai/class-google-provider.php';
 require_once SWPS_PLUGIN_DIR . 'includes/providers/ai/class-xai-provider.php';
+require_once SWPS_PLUGIN_DIR . 'includes/providers/ai/class-opencode-go-provider.php';
 
 // Concrete image providers.
 require_once SWPS_PLUGIN_DIR . 'includes/providers/images/class-unsplash-provider.php';
@@ -1516,6 +1517,7 @@ function swps_activate(): void {
 		'openai_api_key'              => '',
 		'google_api_key'              => '',
 		'xai_api_key'                 => '',
+		'opencode_go_api_key'         => '',
 		'unsplash_api_key'            => '',
 		'pexels_api_key'              => '',
 		'pixabay_api_key'             => '',

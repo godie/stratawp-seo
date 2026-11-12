@@ -230,6 +230,17 @@ class SWPS_Settings {
 		);
 
 		$this->add_field(
+			'opencode_go_api_key',
+			__( 'OpenCode Go API Key', 'stratawp-seo' ),
+			'password',
+			'swps_ai_section',
+			array(
+				'description' => __( 'Get your API key from <a href="https://opencode.ai/docs/console/go/" target="_blank">OpenCode Go</a>', 'stratawp-seo' ),
+				'row_class'   => 'swps-ai-key-row swps-provider-opencode_go',
+			)
+		);
+
+		$this->add_field(
 			'model',
 			__( 'AI Model', 'stratawp-seo' ),
 			'select',
@@ -1398,7 +1409,7 @@ class SWPS_Settings {
 	 * Get the appropriate sanitize callback for a field type.
 	 */
 	private function get_sanitize_callback( string $type, string $key = '' ): callable {
-		// Encrypt the jon_ai_secret on save.
+		// Encrypt the jon_ai_secret and gsc_client_secret on save.
 		if ( $key === 'jon_ai_secret' || $key === 'gsc_client_secret' ) {
 			$option_name = "swps_{$key}";
 			return function ( $value ) use ( $option_name ) {

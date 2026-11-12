@@ -19,6 +19,7 @@ class SWPS_Provider_Factory {
 		'openai'    => 'SWPS_OpenAI_Provider',
 		'google'    => 'SWPS_Google_Provider',
 		'xai'       => 'SWPS_XAI_Provider',
+		'opencode_go' => 'SWPS_OpenCode_Go_Provider',
 	);
 
 	/**
