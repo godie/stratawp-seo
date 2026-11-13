@@ -82,8 +82,8 @@ class SWPS_Mock_WPDB {
 	public $simulate_cas = false;
 	/** @var bool|int|null force query() result (e.g. false for DB error) */
 	public $force_query_result = null;
-	/** @var bool force prepare() to return false */
-	public $force_prepare_false = false;
+	/** @var mixed set to false or null to force prepare() to return that value */
+	public $force_prepare_return = '__normal__';
 
 	public function prepare( $query, ...$args ) {
 		$this->last_prepare = $query;
@@ -91,8 +91,8 @@ class SWPS_Mock_WPDB {
 			$args = $args[0];
 		}
 		$this->last_prepare_args = $args;
-		if ( $this->force_prepare_false ) {
-			return false;
+		if ( '__normal__' !== $this->force_prepare_return ) {
+			return $this->force_prepare_return;
 		}
 		$prepared = $query;
 		foreach ( $args as $a ) {
@@ -480,6 +480,12 @@ final class AllProviderKeysEncryptionTest extends TestCase {
 		$this->assertSame( 'oldplain', $mock2->stored['swps_anthropic_api_key'], 'concurrent DB value must not be overwritten' );
 		$this->assertSame( 'oldplain', get_option( 'swps_anthropic_api_key' ), 'concurrent value must remain unchanged' );
 
+		$reset_diag = function() {
+			$ref = new ReflectionProperty( 'SWPS_Encryption', 'diagnostic_emitted' );
+			$ref->setAccessible( true );
+			$ref->setValue( null, false );
+		};
+
 		// DB error (query=false): DB CAS available but query fails -> fail safely, no non-atomic fallback, retry later.
 		$mock3 = new SWPS_Mock_WPDB();
 		$mock3->options = 'wp_options';
@@ -487,6 +493,7 @@ final class AllProviderKeysEncryptionTest extends TestCase {
 		$mock3->force_query_result = false;
 		$GLOBALS['wpdb'] = $mock3;
 		update_option( 'swps_openai_api_key', 'OldPlain' );
+		$reset_diag();
 		$cap_q = $this->capture_error_log( function() {
 			return SWPS_Encryption::compare_and_swap_option( 'swps_openai_api_key', 'OldPlain', 'encrypted:new' );
 		} );
@@ -498,15 +505,12 @@ final class AllProviderKeysEncryptionTest extends TestCase {
 		$this->assertStringNotContainsString( 'OldPlain', $cap_q['log'] );
 		$this->assertStringNotContainsString( 'encrypted:new', $cap_q['log'] );
 
-		// prepare=false (and WP_DEBUG off): DB CAS path cannot run -> fail safely, observable secret-free diagnostic, no query, no overwrite.
-		$prev_wp_debug = defined( 'WP_DEBUG' ) ? WP_DEBUG : null;
-		if ( ! defined( 'WP_DEBUG' ) ) {
-			define( 'WP_DEBUG', false );
-		}
+		// prepare=false: DB CAS path cannot run -> fail safely, observable secret-free diagnostic (without WP_DEBUG dependency), no query, no overwrite.
+		$reset_diag();
 		$mock4 = new SWPS_Mock_WPDB();
 		$mock4->options = 'wp_options';
 		$mock4->stored['swps_pixabay_api_key'] = 'OldPlain';
-		$mock4->force_prepare_false = true;
+		$mock4->force_prepare_return = false;
 		$GLOBALS['wpdb'] = $mock4;
 		update_option( 'swps_pixabay_api_key', 'OldPlain' );
 		$cap = $this->capture_error_log( function() {
@@ -517,9 +521,39 @@ final class AllProviderKeysEncryptionTest extends TestCase {
 		$this->assertNull( $mock4->last_query, 'no query executed when prepare fails' );
 		$this->assertSame( 'OldPlain', $mock4->stored['swps_pixabay_api_key'], 'DB value must not be overwritten when prepare fails' );
 		$this->assertSame( 'OldPlain', get_option( 'swps_pixabay_api_key' ), 'must not fall through to non-atomic update when prepare fails' );
-		$this->assertStringContainsString( 'SWPS_Encryption: compare-and-swap prepare failed for option: swps_pixabay_api_key', $cap['log'], 'secret-free diagnostic must be observable without WP_DEBUG' );
+		$this->assertStringContainsString( 'SWPS_Encryption: compare-and-swap prepare failed for option: swps_pixabay_api_key', $cap['log'], 'secret-free diagnostic must be observable (no WP_DEBUG dependency)' );
 		$this->assertStringNotContainsString( 'OldPlain', $cap['log'] );
 		$this->assertStringNotContainsString( 'encrypted:new', $cap['log'] );
+
+		// prepare=null/void: same safe failure, no query, no overwrite.
+		$reset_diag();
+		$mock4n = new SWPS_Mock_WPDB();
+		$mock4n->options = 'wp_options';
+		$mock4n->stored['swps_pixabay_api_key'] = 'OldPlain';
+		$mock4n->force_prepare_return = null;
+		$GLOBALS['wpdb'] = $mock4n;
+		update_option( 'swps_pixabay_api_key', 'OldPlain' );
+		$cap_n = $this->capture_error_log( function() {
+			return SWPS_Encryption::compare_and_swap_option( 'swps_pixabay_api_key', 'OldPlain', 'encrypted:new' );
+		} );
+		$this->assertFalse( $cap_n['result'], 'prepare=null/void must fail safely' );
+		$this->assertNull( $mock4n->last_query, 'no query executed when prepare returns null' );
+		$this->assertSame( 'OldPlain', $mock4n->stored['swps_pixabay_api_key'], 'DB value must not be overwritten when prepare returns null' );
+		$this->assertStringContainsString( 'SWPS_Encryption: compare-and-swap prepare failed for option: swps_pixabay_api_key', $cap_n['log'] );
+
+		// Diagnostic deduplication: at most one secret-free diagnostic per request/migration run.
+		$reset_diag();
+		$mock4d = new SWPS_Mock_WPDB();
+		$mock4d->options = 'wp_options';
+		$mock4d->stored['swps_pixabay_api_key'] = 'OldPlain';
+		$mock4d->force_prepare_return = false;
+		$GLOBALS['wpdb'] = $mock4d;
+		update_option( 'swps_pixabay_api_key', 'OldPlain' );
+		$cap_d = $this->capture_error_log( function() {
+			SWPS_Encryption::compare_and_swap_option( 'swps_pixabay_api_key', 'OldPlain', 'encrypted:new' );
+			return SWPS_Encryption::compare_and_swap_option( 'swps_pixabay_api_key', 'OldPlain', 'encrypted:new' );
+		} );
+		$this->assertSame( 1, substr_count( $cap_d['log'], 'SWPS_Encryption: compare-and-swap' ), 'at most one diagnostic per request/migration run' );
 
 		// No exact atomic DB CAS available (wpdb without prepare/query): fail safely, no non-atomic DB fallback.
 		$mock5 = new class {
@@ -529,6 +563,7 @@ final class AllProviderKeysEncryptionTest extends TestCase {
 		};
 		$GLOBALS['wpdb'] = $mock5;
 		update_option( 'swps_unsplash_api_key', 'OldPlain' );
+		$reset_diag();
 		$cap_u = $this->capture_error_log( function() {
 			return SWPS_Encryption::compare_and_swap_option( 'swps_unsplash_api_key', 'OldPlain', 'encrypted:new' );
 		} );

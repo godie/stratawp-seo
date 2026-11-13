@@ -206,6 +206,9 @@ class SWPS_Encryption {
 	 *
 	 * @return string Raw 32-byte key.
 	 */
+	/** @var bool Emit at most one secret-free CAS diagnostic per request/migration run. */
+	private static $diagnostic_emitted = false;
+
 	private static function get_key(): string {
 		return hash( 'sha256', wp_salt( 'auth' ), true );
 	}
@@ -224,11 +227,16 @@ class SWPS_Encryption {
 
 	/**
 	 * Emit a secret-free diagnostic that must be observable without depending on WP_DEBUG.
+	 * Deduplicated to at most one diagnostic per request/migration run.
 	 *
 	 * @param string $reason Short, non-sensitive description (option names are okay).
 	 * @return void
 	 */
 	private static function diagnostic( string $reason ): void {
+		if ( self::$diagnostic_emitted ) {
+			return;
+		}
+		self::$diagnostic_emitted = true;
 		error_log( 'SWPS_Encryption: ' . $reason ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- secret-free operational diagnostic; observable without WP_DEBUG.
 	}
 
@@ -313,6 +321,7 @@ class SWPS_Encryption {
 	 * @return array{migrated:string[], failed:string[], skipped:string[], complete:bool}
 	 */
 	public static function migrate_secret_options(): array {
+		self::$diagnostic_emitted = false; // at most one secret-free diagnostic per migration run
 		$result = array( 'migrated' => array(), 'failed' => array(), 'skipped' => array(), 'complete' => false );
 		foreach ( static::secret_option_names() as $option_name ) {
 			$value = get_option( $option_name, '' );
