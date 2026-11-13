@@ -258,9 +258,9 @@ class SWPS_Image_Inserter {
 
 		// Get the API key for the *selected* provider, not the injected one.
 		$api_key = match ( $provider_slug ) {
-			'unsplash' => (string) get_option( 'swps_unsplash_api_key', '' ),
-			'pexels'   => (string) get_option( 'swps_pexels_api_key', '' ),
-			'pixabay'  => (string) get_option( 'swps_pixabay_api_key', '' ),
+			'unsplash' => SWPS_Encryption::get_secret_option( 'swps_unsplash_api_key', '' ),
+			'pexels'   => SWPS_Encryption::get_secret_option( 'swps_pexels_api_key', '' ),
+			'pixabay'  => SWPS_Encryption::get_secret_option( 'swps_pixabay_api_key', '' ),
 			default    => '',
 		};
 

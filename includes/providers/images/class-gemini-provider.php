@@ -36,7 +36,7 @@ class SWPS_Gemini_Image_Provider extends SWPS_Image_Provider {
 	 * Get the API key — reuses the Google AI key.
 	 */
 	public function get_api_key(): string {
-		return (string) get_option( 'swps_google_api_key', '' );
+		return SWPS_Encryption::get_secret_option( 'swps_google_api_key', '' );
 	}
 
 	/**
