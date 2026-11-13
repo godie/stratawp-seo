@@ -82,6 +82,8 @@ class SWPS_Mock_WPDB {
 	public $simulate_cas = false;
 	/** @var bool|int|null force query() result (e.g. false for DB error) */
 	public $force_query_result = null;
+	/** @var bool force prepare() to return false */
+	public $force_prepare_false = false;
 
 	public function prepare( $query, ...$args ) {
 		$this->last_prepare = $query;
@@ -89,6 +91,9 @@ class SWPS_Mock_WPDB {
 			$args = $args[0];
 		}
 		$this->last_prepare_args = $args;
+		if ( $this->force_prepare_false ) {
+			return false;
+		}
 		$prepared = $query;
 		foreach ( $args as $a ) {
 			$prepared = preg_replace( '/%s/', "'" . str_replace("'", "\\'", (string) $a) . "'", $prepared, 1 );
@@ -467,6 +472,32 @@ final class AllProviderKeysEncryptionTest extends TestCase {
 		$this->assertFalse( $err, 'query=false must fail safely when DB CAS is available' );
 		$this->assertSame( 'OldPlain', $mock3->stored['swps_openai_api_key'], 'DB value must not be overwritten on query error' );
 		$this->assertSame( 'OldPlain', get_option( 'swps_openai_api_key' ), 'must not fall through to non-atomic update on DB error' );
+
+		// prepare=false: DB CAS path cannot run -> fail safely, observable/diagnostic path, no query, no overwrite.
+		$mock4 = new SWPS_Mock_WPDB();
+		$mock4->options = 'wp_options';
+		$mock4->stored['swps_pixabay_api_key'] = 'OldPlain';
+		$mock4->force_prepare_false = true;
+		$GLOBALS['wpdb'] = $mock4;
+		update_option( 'swps_pixabay_api_key', 'OldPlain' );
+		$prep_fail = SWPS_Encryption::compare_and_swap_option( 'swps_pixabay_api_key', 'OldPlain', 'encrypted:new' );
+		$this->assertFalse( $prep_fail, 'prepare=false must fail safely (retry later), not silently succeed/skip unsafely' );
+		$this->assertNull( $mock4->last_query, 'no query executed when prepare fails' );
+		$this->assertSame( 'OldPlain', $mock4->stored['swps_pixabay_api_key'], 'DB value must not be overwritten when prepare fails' );
+		$this->assertSame( 'OldPlain', get_option( 'swps_pixabay_api_key' ), 'must not fall through to non-atomic update when prepare fails' );
+
+		// No exact atomic DB CAS available (wpdb without prepare/query): fail safely, no non-atomic DB fallback.
+		$mock5 = new class {
+			public $options = 'wp_options';
+			public $update_calls = array();
+			public function update( $table, $data, $where ) { $this->update_calls[] = compact('table','data','where'); return 1; }
+		};
+		$GLOBALS['wpdb'] = $mock5;
+		update_option( 'swps_unsplash_api_key', 'OldPlain' );
+		$no_cas = SWPS_Encryption::compare_and_swap_option( 'swps_unsplash_api_key', 'OldPlain', 'encrypted:new' );
+		$this->assertFalse( $no_cas, 'must fail safely when exact atomic DB CAS unavailable' );
+		$this->assertSame( array(), $mock5->update_calls, 'must not use non-atomic wpdb->update fallback' );
+		$this->assertSame( 'OldPlain', get_option( 'swps_unsplash_api_key' ) );
 
 		unset( $GLOBALS['wpdb'] );
 

@@ -404,32 +404,22 @@ class SWPS_Encryption {
 		global $wpdb;
 		if ( isset( $wpdb ) && is_object( $wpdb ) && isset( $wpdb->options ) ) {
 			$table = $wpdb->options;
-			$db_cas_available = false;
-			$rows = false;
 
-			// Prefer exact binary comparison to avoid case-insensitive collation masking changes.
+			// Exact atomic CAS via binary comparison; no non-atomic DB fallback.
 			if ( method_exists( $wpdb, 'prepare' ) && method_exists( $wpdb, 'query' ) ) {
-				$db_cas_available = true;
 				$sql = $wpdb->prepare(
 					"UPDATE {$table} SET option_value = %s WHERE option_name = %s AND option_value = BINARY %s",
 					$new_value,
 					$option_name,
 					$expected
 				);
-				if ( false !== $sql ) {
-					$rows = $wpdb->query( $sql );
+				if ( false === $sql ) {
+					// Observable, secret-free diagnostic; retry on a later admin request.
+					self::log( 'compare-and-swap prepare failed for option: ' . $option_name );
+					return false;
 				}
-			} elseif ( method_exists( $wpdb, 'update' ) ) {
-				$db_cas_available = true;
-				// Fallback: wpdb->update cannot express BINARY; still compare-and-swap by value.
-				$rows = $wpdb->update(
-					$table,
-					array( 'option_value' => $new_value ),
-					array( 'option_name' => $option_name, 'option_value' => $expected )
-				);
-			}
 
-			if ( $db_cas_available ) {
+				$rows = $wpdb->query( $sql );
 				if ( false !== $rows && 0 !== $rows && 0 !== (int) $rows ) {
 					if ( function_exists( 'wp_cache_delete' ) ) {
 						wp_cache_delete( $option_name, 'options' );
@@ -438,11 +428,17 @@ class SWPS_Encryption {
 					}
 					return true;
 				}
-				// 0 rows (concurrent change/no match) or DB error (query/update returned false):
-				// fail safely when DB CAS is available so migration can retry later; never
-				// fall through to non-atomic get_option()/update_option().
+				if ( false === $rows ) {
+					// DB error: fail safely so migration can retry later; no non-atomic fallback.
+					self::log( 'compare-and-swap query failed for option: ' . $option_name );
+				}
+				// 0 rows (concurrent change/no match) or DB error handled above.
 				return false;
 			}
+
+			// DB present but exact atomic CAS unavailable: fail safely (no non-atomic DB fallback).
+			self::log( 'compare-and-swap unavailable (missing prepare/query) for option: ' . $option_name );
+			return false;
 		}
 
 		$current = get_option( $option_name, null );
