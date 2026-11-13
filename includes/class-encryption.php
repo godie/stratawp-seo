@@ -223,6 +223,16 @@ class SWPS_Encryption {
 	}
 
 	/**
+	 * Emit a secret-free diagnostic that must be observable without depending on WP_DEBUG.
+	 *
+	 * @param string $reason Short, non-sensitive description (option names are okay).
+	 * @return void
+	 */
+	private static function diagnostic( string $reason ): void {
+		error_log( 'SWPS_Encryption: ' . $reason ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- secret-free operational diagnostic; observable without WP_DEBUG.
+	}
+
+	/**
 	 * Option name flag set when plaintext secret migration has completed
 	 * successfully (no remaining plaintext secrets, no encrypt failures).
 	 */
@@ -413,9 +423,9 @@ class SWPS_Encryption {
 					$option_name,
 					$expected
 				);
-				if ( false === $sql ) {
+				if ( ! is_string( $sql ) || '' === $sql ) {
 					// Observable, secret-free diagnostic; retry on a later admin request.
-					self::log( 'compare-and-swap prepare failed for option: ' . $option_name );
+					self::diagnostic( 'compare-and-swap prepare failed for option: ' . $option_name );
 					return false;
 				}
 
@@ -430,14 +440,14 @@ class SWPS_Encryption {
 				}
 				if ( false === $rows ) {
 					// DB error: fail safely so migration can retry later; no non-atomic fallback.
-					self::log( 'compare-and-swap query failed for option: ' . $option_name );
+					self::diagnostic( 'compare-and-swap query failed for option: ' . $option_name );
 				}
 				// 0 rows (concurrent change/no match) or DB error handled above.
 				return false;
 			}
 
 			// DB present but exact atomic CAS unavailable: fail safely (no non-atomic DB fallback).
-			self::log( 'compare-and-swap unavailable (missing prepare/query) for option: ' . $option_name );
+			self::diagnostic( 'compare-and-swap unavailable (missing prepare/query) for option: ' . $option_name );
 			return false;
 		}
 
