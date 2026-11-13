@@ -206,9 +206,6 @@ class SWPS_Encryption {
 	 *
 	 * @return string Raw 32-byte key.
 	 */
-	/** @var bool Emit at most one secret-free CAS diagnostic per request/migration run. */
-	private static $diagnostic_emitted = false;
-
 	private static function get_key(): string {
 		return hash( 'sha256', wp_salt( 'auth' ), true );
 	}
@@ -227,16 +224,11 @@ class SWPS_Encryption {
 
 	/**
 	 * Emit a secret-free diagnostic that must be observable without depending on WP_DEBUG.
-	 * Deduplicated to at most one diagnostic per request/migration run.
 	 *
 	 * @param string $reason Short, non-sensitive description (option names are okay).
 	 * @return void
 	 */
 	private static function diagnostic( string $reason ): void {
-		if ( self::$diagnostic_emitted ) {
-			return;
-		}
-		self::$diagnostic_emitted = true;
 		error_log( 'SWPS_Encryption: ' . $reason ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- secret-free operational diagnostic; observable without WP_DEBUG.
 	}
 
@@ -321,7 +313,6 @@ class SWPS_Encryption {
 	 * @return array{migrated:string[], failed:string[], skipped:string[], complete:bool}
 	 */
 	public static function migrate_secret_options(): array {
-		self::$diagnostic_emitted = false; // at most one secret-free diagnostic per migration run
 		$result = array( 'migrated' => array(), 'failed' => array(), 'skipped' => array(), 'complete' => false );
 		foreach ( static::secret_option_names() as $option_name ) {
 			$value = get_option( $option_name, '' );
@@ -421,50 +412,45 @@ class SWPS_Encryption {
 	 */
 	public static function compare_and_swap_option( string $option_name, string $expected, string $new_value ): bool {
 		global $wpdb;
-		if ( isset( $wpdb ) && is_object( $wpdb ) && isset( $wpdb->options ) ) {
-			$table = $wpdb->options;
-
-			// Exact atomic CAS via binary comparison; no non-atomic DB fallback.
-			if ( method_exists( $wpdb, 'prepare' ) && method_exists( $wpdb, 'query' ) ) {
-				$sql = $wpdb->prepare(
-					"UPDATE {$table} SET option_value = %s WHERE option_name = %s AND option_value = BINARY %s",
-					$new_value,
-					$option_name,
-					$expected
-				);
-				if ( ! is_string( $sql ) || '' === $sql ) {
-					// Observable, secret-free diagnostic; retry on a later admin request.
-					self::diagnostic( 'compare-and-swap prepare failed for option: ' . $option_name );
-					return false;
-				}
-
-				$rows = $wpdb->query( $sql );
-				if ( false !== $rows && 0 !== $rows && 0 !== (int) $rows ) {
-					if ( function_exists( 'wp_cache_delete' ) ) {
-						wp_cache_delete( $option_name, 'options' );
-						wp_cache_delete( 'alloptions', 'options' );
-						wp_cache_delete( 'notoptions', 'options' );
-					}
-					return true;
-				}
-				if ( false === $rows ) {
-					// DB error: fail safely so migration can retry later; no non-atomic fallback.
-					self::diagnostic( 'compare-and-swap query failed for option: ' . $option_name );
-				}
-				// 0 rows (concurrent change/no match) or DB error handled above.
+		if ( ! isset( $wpdb ) ) {
+			// No database object (unit-test context only): strict string compare, then write.
+			$current = get_option( $option_name, null );
+			if ( ! is_string( $current ) || 0 !== strcmp( $current, $expected ) ) {
 				return false;
 			}
-
-			// DB present but exact atomic CAS unavailable: fail safely (no non-atomic DB fallback).
+			return (bool) update_option( $option_name, $new_value );
+		}
+		if ( ! method_exists( $wpdb, 'prepare' ) || ! method_exists( $wpdb, 'query' ) ) {
+			// Database present without exact atomic CAS: fail safely, never a non-atomic option write.
 			self::diagnostic( 'compare-and-swap unavailable (missing prepare/query) for option: ' . $option_name );
 			return false;
 		}
 
-		$current = get_option( $option_name, null );
-		if ( ! is_string( $current ) || 0 !== strcmp( $current, $expected ) ) {
+		// Binary comparison so a case-only or trailing-space change cannot match under *_ci collation.
+		$sql = $wpdb->prepare(
+			"UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = BINARY %s",
+			$new_value,
+			$option_name,
+			$expected
+		);
+		if ( ! is_string( $sql ) || '' === $sql ) {
+			// Observable, secret-free diagnostic; retry on a later admin request.
+			self::diagnostic( 'compare-and-swap prepare failed for option: ' . $option_name );
 			return false;
 		}
-		return (bool) update_option( $option_name, $new_value );
+
+		$rows = $wpdb->query( $sql );
+		if ( false === $rows ) {
+			self::diagnostic( 'compare-and-swap query failed for option: ' . $option_name );
+			return false;
+		}
+		if ( (int) $rows < 1 ) {
+			return false; // 0 rows: value changed concurrently or no match.
+		}
+		wp_cache_delete( $option_name, 'options' );
+		wp_cache_delete( 'alloptions', 'options' );
+		wp_cache_delete( 'notoptions', 'options' );
+		return true;
 	}
 
 }

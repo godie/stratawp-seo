@@ -652,15 +652,8 @@ final class StrataWP_SEO {
 			return;
 		}
 
-		if ( class_exists( 'SWPS_Encryption' ) ) {
-			// Real copy flow in testable helper: preserves legacy swps_api_key and only copies when target empty.
-			SWPS_Encryption::migrate_legacy_api_key_to_anthropic();
-		} else {
-			$legacy_key = (string) get_option( 'swps_api_key', '' );
-			if ( '' !== $legacy_key && '' === (string) get_option( 'swps_anthropic_api_key', '' ) ) {
-				update_option( 'swps_anthropic_api_key', $legacy_key );
-			}
-		}
+		// Copies legacy swps_api_key to Anthropic only when empty; never deletes the legacy option.
+		SWPS_Encryption::migrate_legacy_api_key_to_anthropic();
 
 		if ( false === get_option( 'swps_ai_provider' ) ) {
 			update_option( 'swps_ai_provider', 'anthropic' );

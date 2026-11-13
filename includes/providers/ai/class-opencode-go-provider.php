@@ -15,23 +15,13 @@ class SWPS_OpenCode_Go_Provider extends SWPS_AI_Provider {
 	private const MODELS_URL = 'https://opencode.ai/inference/go/v1/models';
 
 	/**
-	 * Stable session identifier for OpenCode Go request routing.
-	 *
-	 * @var string|null
-	 */
-	private ?string $session_id = null;
-
-	/**
 	 * Get a stable per-site session ID for OpenCode Go requests.
 	 *
 	 * Derived deterministically from the site identity so all requests from
 	 * the same site share a stable session while different sites differ.
 	 */
 	public function get_session_id(): string {
-		if ( null === $this->session_id ) {
-			$this->session_id = self::derive_site_session_id();
-		}
-		return $this->session_id;
+		return self::derive_site_session_id();
 	}
 
 	/**
