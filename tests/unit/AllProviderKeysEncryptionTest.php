@@ -112,10 +112,11 @@ class SWPS_Mock_WPDB {
 			// args: [new_value, option_name, expected]
 			$new = (string) $this->last_prepare_args[0];
 			$name = (string) $this->last_prepare_args[1];
-			$expected = (string) $this->last_prepare_args[2];
+			$expected_hash = (string) $this->last_prepare_args[2];
 			$current = array_key_exists( $name, $this->stored ) ? (string) $this->stored[ $name ] : null;
-			// Binary/exact comparison semantics.
-			if ( null !== $current && 0 === strcmp( $current, $expected ) ) {
+			// CAS compares a SHA-256 hash of the stored value: the raw expected
+			// secret never reaches the SQL text. Exact compare is preserved.
+			if ( null !== $current && hash( 'sha256', $current ) === $expected_hash ) {
 				$this->stored[ $name ] = $new;
 				return 1;
 			}
@@ -458,10 +459,12 @@ final class AllProviderKeysEncryptionTest extends TestCase {
 		$this->assertTrue( $ok, 'CAS should succeed when DB reports 1 row updated' );
 		$this->assertStringContainsString( 'UPDATE wp_options', (string) $mock->last_prepare );
 		$this->assertStringContainsString( 'option_name = %s', (string) $mock->last_prepare );
-		$this->assertStringContainsString( 'option_value = BINARY %s', (string) $mock->last_prepare, 'must use binary/exact option_value comparison' );
-		$this->assertSame( array( 'encrypted:new', 'swps_anthropic_api_key', 'OldPlain' ), $mock->last_prepare_args );
+		$this->assertStringContainsString( 'SHA2(option_value, 256) = %s', (string) $mock->last_prepare, 'must compare a hash of option_value for exactness without embedding the secret' );
+		$this->assertSame( array( 'encrypted:new', 'swps_anthropic_api_key', hash( 'sha256', 'OldPlain' ) ), $mock->last_prepare_args );
 		$this->assertNotNull( $mock->last_query );
-		$this->assertStringContainsString( 'BINARY', (string) $mock->last_query );
+		$this->assertStringContainsString( 'SHA2(option_value, 256)', (string) $mock->last_query );
+		$this->assertStringNotContainsString( 'OldPlain', (string) $mock->last_query, 'plaintext expected value must never appear in SQL' );
+		$this->assertStringNotContainsString( 'OldPlain', (string) $mock->last_prepare, 'plaintext expected value must never appear in the prepared query' );
 		$this->assertSame( 'encrypted:new', $mock->stored['swps_anthropic_api_key'], 'modeled DB value updated on exact match' );
 
 		// 0-row race case: concurrent DB value differs (including case-only difference under ci collation,
@@ -586,7 +589,8 @@ final class AllProviderKeysEncryptionTest extends TestCase {
 		$this->assertTrue( $res['copied'] );
 		$this->assertTrue( $res['legacy_present'] );
 		$this->assertTrue( $res['target_was_empty'] );
-		$this->assertSame( 'legacy-secret', get_option( 'swps_anthropic_api_key' ), 'copied decrypted legacy value' );
+		$this->assertTrue( SWPS_Encryption::is_encrypted( get_option( 'swps_anthropic_api_key' ) ), 'copied value must be stored encrypted immediately' );
+		$this->assertSame( 'legacy-secret', SWPS_Encryption::decrypt( get_option( 'swps_anthropic_api_key' ) ), 'copied value decrypts to the legacy plaintext' );
 		$this->assertSame( 'legacy-secret', SWPS_Encryption::decrypt( get_option( 'swps_api_key', '' ) ), 'legacy option preserved (not deleted/cleared)' );
 		$this->assertTrue( SWPS_Encryption::is_encrypted( get_option( 'swps_api_key' ) ), 'legacy value remains as stored' );
 
@@ -608,4 +612,41 @@ final class AllProviderKeysEncryptionTest extends TestCase {
 		$this->assertSame( '', get_option( 'swps_anthropic_api_key' ) );
 	}
 
+
+	/**
+	 * If encryption is unavailable the copy must not fall back to plaintext.
+	 */
+	public function test_legacy_copy_fails_safe_when_encryption_fails(): void {
+		update_option( 'swps_api_key', SWPS_Encryption::encrypt( 'legacy-secret' ) );
+		update_option( 'swps_anthropic_api_key', '' );
+
+		SWPS_Test_Encryption::$fail_plaintexts = array( 'legacy-secret' );
+		$res = SWPS_Test_Encryption::migrate_legacy_api_key_to_anthropic();
+		SWPS_Test_Encryption::reset();
+
+		$this->assertFalse( $res['copied'], 'copy must not report success when encryption failed' );
+		$this->assertSame( '', get_option( 'swps_anthropic_api_key' ), 'must never store the plaintext legacy secret' );
+		$this->assertTrue( SWPS_Encryption::is_encrypted( get_option( 'swps_api_key' ) ), 'legacy option untouched and encrypted' );
+	}
+
+	/**
+	 * A submitted value that already looks encrypted must be rejected at the
+	 * storage boundary instead of being stored verbatim (which would bypass
+	 * encryption-at-rest and turn into an undecryptable secret).
+	 */
+	public function test_encrypt_option_for_storage_rejects_pre_encrypted_submission(): void {
+		update_option( 'swps_openai_api_key', 'existing-secret' );
+
+		foreach ( array( 'encrypted:v2:AAAA', 'encrypted:abc:def' ) as $submitted ) {
+			$result = SWPS_Encryption::encrypt_option_for_storage( 'swps_openai_api_key', $submitted );
+			$this->assertTrue( $result['error'], 'pre-encrypted submission must be rejected' );
+			$this->assertSame( 'existing-secret', $result['value'], 'existing saved value must be preserved' );
+		}
+
+		// Plaintext submissions still work as before.
+		$ok = SWPS_Encryption::encrypt_option_for_storage( 'swps_openai_api_key', 'fresh-secret' );
+		$this->assertFalse( $ok['error'] );
+		$this->assertTrue( SWPS_Encryption::is_encrypted( $ok['value'] ) );
+		$this->assertSame( 'fresh-secret', SWPS_Encryption::decrypt( $ok['value'] ) );
+	}
 }

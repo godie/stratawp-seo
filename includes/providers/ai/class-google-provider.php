@@ -42,7 +42,7 @@ class SWPS_Google_Provider extends SWPS_AI_Provider {
 		}
 
 		$model = $this->get_validated_model();
-		$url   = self::API_BASE . $model . ':generateContent?key=' . rawurlencode( $api_key );
+		$url   = self::API_BASE . $model . ':generateContent';
 
 		$body = array(
 			'system_instruction' => array(
@@ -68,7 +68,8 @@ class SWPS_Google_Provider extends SWPS_AI_Provider {
 			array(
 				'timeout' => 180,
 				'headers' => array(
-					'Content-Type' => 'application/json',
+					'Content-Type'   => 'application/json',
+					'x-goog-api-key' => $api_key,
 				),
 				'body'    => wp_json_encode( $body ),
 			)
@@ -124,8 +125,11 @@ class SWPS_Google_Provider extends SWPS_AI_Provider {
 			return array();
 		}
 		$response = wp_remote_get(
-			'https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=' . rawurlencode( $api_key ),
-			array( 'timeout' => 15 )
+			'https://generativelanguage.googleapis.com/v1beta/models?pageSize=200',
+			array(
+				'timeout' => 15,
+				'headers' => array( 'x-goog-api-key' => $api_key ),
+			)
 		);
 		if ( is_wp_error( $response ) || 200 !== wp_remote_retrieve_response_code( $response ) ) {
 			return array();
@@ -179,7 +183,7 @@ class SWPS_Google_Provider extends SWPS_AI_Provider {
 		}
 
 		$model = $this->get_validated_model();
-		$url   = self::API_BASE . $model . ':generateContent?key=' . rawurlencode( $api_key );
+		$url   = self::API_BASE . $model . ':generateContent';
 
 		$body = array(
 			'contents'         => array(
@@ -202,7 +206,8 @@ class SWPS_Google_Provider extends SWPS_AI_Provider {
 			array(
 				'timeout' => 180,
 				'headers' => array(
-					'Content-Type' => 'application/json',
+					'Content-Type'   => 'application/json',
+					'x-goog-api-key' => $api_key,
 				),
 				'body'    => wp_json_encode( $body ),
 			)
@@ -279,14 +284,15 @@ class SWPS_Google_Provider extends SWPS_AI_Provider {
 
 	public function test_key( string $api_key ): bool|WP_Error {
 		$model = $this->get_validated_model();
-		$url   = self::API_BASE . $model . ':generateContent?key=' . rawurlencode( $api_key );
+		$url   = self::API_BASE . $model . ':generateContent';
 
 		$response = wp_remote_post(
 			$url,
 			array(
 				'timeout' => 30,
 				'headers' => array(
-					'Content-Type' => 'application/json',
+					'Content-Type'   => 'application/json',
+					'x-goog-api-key' => $api_key,
 				),
 				'body'    => wp_json_encode(
 					array(

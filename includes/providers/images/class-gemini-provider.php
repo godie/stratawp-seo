@@ -71,8 +71,11 @@ class SWPS_Gemini_Image_Provider extends SWPS_Image_Provider {
 			return array();
 		}
 		$response = wp_remote_get(
-			'https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=' . rawurlencode( $api_key ),
-			array( 'timeout' => 15 )
+			'https://generativelanguage.googleapis.com/v1beta/models?pageSize=200',
+			array(
+				'timeout' => 15,
+				'headers' => array( 'x-goog-api-key' => $api_key ),
+			)
 		);
 		if ( is_wp_error( $response ) || 200 !== wp_remote_retrieve_response_code( $response ) ) {
 			return array();
@@ -148,14 +151,15 @@ class SWPS_Gemini_Image_Provider extends SWPS_Image_Provider {
 	 * @return string|WP_Error Temp file path on success.
 	 */
 	public function generate_image( string $prompt, string $api_key, string $aspect = '1:1' ): string|WP_Error {
-		$url = self::API_BASE . $this->image_model() . ':generateContent?key=' . $api_key;
+		$url = self::API_BASE . $this->image_model() . ':generateContent';
 
 		$response = wp_remote_post(
 			$url,
 			array(
 				'timeout' => 60,
 				'headers' => array(
-					'Content-Type' => 'application/json',
+					'Content-Type'   => 'application/json',
+					'x-goog-api-key' => $api_key,
 				),
 				'body'    => wp_json_encode(
 					array(

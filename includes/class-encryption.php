@@ -14,6 +14,10 @@
  * sent to a third-party API. The affected settings field renders empty,
  * prompting the admin to re-enter the secret.
  *
+ * Backup, rollback and the key-separation migration plan are documented in
+ * docs/security/encryption-rollback.md. Rotating AUTH_SALT without that
+ * backup set makes every stored value unreadable.
+ *
  * @package StrataWP_SEO
  */
 
@@ -296,6 +300,15 @@ class SWPS_Encryption {
 		if ( '' === $sanitized ) {
 			return array( 'value' => $existing, 'error' => false );
 		}
+		if ( static::is_encrypted( $sanitized ) ) {
+			// encrypt() passes an already-"encrypted:" value through unchanged, so
+			// accepting one here would bypass encryption-at-rest and store a blob
+			// that can never be decrypted. Reject the submission instead.
+			return array(
+				'value' => $existing,
+				'error' => true,
+			);
+		}
 		$encrypted = static::encrypt( $sanitized );
 		if ( '' === $encrypted ) {
 			return array( 'value' => $existing, 'error' => true );
@@ -378,8 +391,14 @@ class SWPS_Encryption {
 
 		$copied = false;
 		if ( '' !== $legacy_value && $target_empty ) {
-			update_option( 'swps_anthropic_api_key', $legacy_value );
-			$copied = true;
+			// Store encrypted immediately: never write the plaintext legacy secret.
+			$encrypted = static::encrypt( $legacy_value );
+			if ( '' === $encrypted ) {
+				self::diagnostic( 'legacy key copy skipped: encryption unavailable for option: swps_anthropic_api_key' );
+			} else {
+				update_option( 'swps_anthropic_api_key', $encrypted );
+				$copied = true;
+			}
 		}
 
 		return array(
@@ -405,8 +424,9 @@ class SWPS_Encryption {
 	/**
 	 * Update an option only if its stored value still matches $expected (compare-and-swap).
 	 *
-	 * Uses binary/exact option_value comparison so case-insensitive DB collation
-	 * cannot treat a changed value as equal.
+	 * Compares SHA-256 hashes of the stored and expected values: the check
+	 * stays byte-exact (a case-insensitive collation cannot match) while the
+	 * plaintext secret never appears in the SQL text that WordPress can log.
 	 *
 	 * @return bool True if the expected value was replaced.
 	 */
@@ -426,12 +446,16 @@ class SWPS_Encryption {
 			return false;
 		}
 
-		// Binary comparison so a case-only or trailing-space change cannot match under *_ci collation.
+		// Hash comparison so a case-only or trailing-space change cannot match under
+		// *_ci collation, while the plaintext secret stays out of the SQL text that
+		// WordPress (SAVEQUERIES) and the database (slow query log) can record.
+		// MySQL 5.5+ and MariaDB 10.0+ provide SHA2(); if it errors, the CAS fails
+		// safe below and the migration retries on a later request.
 		$sql = $wpdb->prepare(
-			"UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = BINARY %s",
+			"UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND SHA2(option_value, 256) = %s",
 			$new_value,
 			$option_name,
-			$expected
+			hash( 'sha256', $expected )
 		);
 		if ( ! is_string( $sql ) || '' === $sql ) {
 			// Observable, secret-free diagnostic; retry on a later admin request.

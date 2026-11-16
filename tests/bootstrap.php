@@ -55,6 +55,33 @@ if ( ! function_exists( '__' ) ) {
     }
 }
 
+// HTTP stubs shared by provider tests. Every request is appended to
+// $GLOBALS['swps_test_http_log'] so tests can assert on URL and headers.
+if ( ! function_exists( 'wp_remote_post' ) ) {
+    function wp_remote_post( $url, $args = array() ) {
+        $GLOBALS['swps_test_http_log'][] = array( 'method' => 'POST', 'url' => $url, 'args' => $args );
+        $GLOBALS['swps_test_last_post']  = array( 'url' => $url, 'args' => $args );
+        return $GLOBALS['swps_test_http_response'] ?? array( 'response' => array( 'code' => 200 ), 'body' => '' );
+    }
+}
+if ( ! function_exists( 'wp_remote_get' ) ) {
+    function wp_remote_get( $url, $args = array() ) {
+        $GLOBALS['swps_test_http_log'][] = array( 'method' => 'GET', 'url' => $url, 'args' => $args );
+        $GLOBALS['swps_test_last_get']   = array( 'url' => $url, 'args' => $args );
+        return $GLOBALS['swps_test_http_response'] ?? array( 'response' => array( 'code' => 200 ), 'body' => '' );
+    }
+}
+if ( ! function_exists( 'wp_remote_retrieve_response_code' ) ) {
+    function wp_remote_retrieve_response_code( $r ) {
+        return $r['response']['code'] ?? 0;
+    }
+}
+if ( ! function_exists( 'wp_remote_retrieve_body' ) ) {
+    function wp_remote_retrieve_body( $r ) {
+        return $r['body'] ?? '';
+    }
+}
+
 if ( ! class_exists( 'WP_Error' ) ) {
     class WP_Error {
         private string $code;
